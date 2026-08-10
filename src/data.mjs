@@ -60,6 +60,12 @@ export function liveSessions() {
   return out;
 }
 
+// The live worker (if any) currently holding a given session — used to decide
+// whether a message can be delivered to a running agent vs. would fork it.
+export function liveSessionFor(sessionId) {
+  return liveSessions().find((s) => s.sessionId === sessionId) || null;
+}
+
 // --- Background jobs (~/.claude/jobs/<id>/state.json) ---
 export function jobs() {
   const dir = path.join(CLAUDE_DIR, 'jobs');
@@ -260,36 +266,16 @@ export function inbox() {
   for (const p of projects) {
     for (const s of p.sessions) {
       if (s.stub) continue;
+      const base = {
+        project: p.name, projectKey: p.key, sessionId: s.sessionId, title: s.title,
+        ts: s.lastTs, live: s.live, short: s.jobId, cwd: s.cwd || p.cwd,
+      };
       if (s.status === 'stalled') {
-        items.push({
-          type: 'stalled',
-          project: p.name,
-          projectKey: p.key,
-          sessionId: s.sessionId,
-          title: s.title,
-          preview: 'Busy but no transcript activity — possible hang or hidden prompt. Check the terminal.',
-          ts: s.lastTs,
-        });
+        items.push({ ...base, type: 'stalled', preview: 'Busy but no transcript activity — possible hang or hidden prompt. Check the terminal.' });
       } else if (s.status === 'waiting') {
-        items.push({
-          type: 'waiting',
-          project: p.name,
-          projectKey: p.key,
-          sessionId: s.sessionId,
-          title: s.title,
-          preview: s.lastAssistantText,
-          ts: s.lastTs,
-        });
+        items.push({ ...base, type: 'waiting', preview: s.lastAssistantText });
       } else if (s.status === 'done') {
-        items.push({
-          type: 'report',
-          project: p.name,
-          projectKey: p.key,
-          sessionId: s.sessionId,
-          title: s.title,
-          preview: s.jobResult || s.jobDetail,
-          ts: s.lastTs,
-        });
+        items.push({ ...base, type: 'report', preview: s.jobResult || s.jobDetail });
       }
     }
   }

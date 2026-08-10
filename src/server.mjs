@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  CLAUDE_DIR, fleet, inbox, jobs, jobTimeline, usageRollup, getSessionDetail, searchTranscripts,
+  CLAUDE_DIR, fleet, inbox, jobs, jobTimeline, usageRollup, getSessionDetail, searchTranscripts, liveSessionFor,
 } from './data.mjs';
 import { transcriptPath } from './data.mjs';
 import { sessionSummary } from './transcript.mjs';
@@ -107,6 +107,30 @@ function openInTerminal(cwd, cb) {
   execFile('open', ['-a', 'iTerm', cwd], (err) => {
     if (err) execFile('open', ['-a', 'Terminal', cwd], cb);
     else cb(null);
+  });
+}
+
+// Open a terminal running `claude attach <short>` so the user talks to the
+// live worker directly. `short` is validated hex upstream; passed as an
+// AppleScript string literal (osascript args are not shell-expanded).
+function openAttach(short, cb) {
+  const cmd = `claude attach ${short}`;
+  // Terminal.app `do script` is universally available; iTerm has its own dialect.
+  const iterm = `tell application "iTerm"
+    activate
+    try
+      set w to current window
+    on error
+      set w to (create window with default profile)
+    end try
+    tell current session of w to write text "${cmd}"
+  end tell`;
+  execFile('osascript', ['-e', iterm], (err) => {
+    if (!err) return cb(null);
+    execFile('osascript', ['-e', `tell application "Terminal" to do script "${cmd}"`], (err2) => {
+      if (err2) return cb(err2);
+      execFile('osascript', ['-e', 'tell application "Terminal" to activate'], () => cb(null));
+    });
   });
 }
 
@@ -238,11 +262,20 @@ const server = http.createServer(async (req, res) => {
       if (/^-/.test(String(sessionId || ''))) return json(res, 400, { error: 'invalid session id' });
       const tp = transcriptPath(String(projectKey || ''), String(sessionId || ''));
       if (!tp) return json(res, 404, { error: 'session not found' });
+      // A session that is CURRENTLY LIVE is held by a running worker. `--resume`
+      // on it can't attach — it would fork a SECOND worker onto the same
+      // transcript lineage (the "two sessions in claude agents" surprise, and
+      // two agents competing on one thread). Refuse to fork; tell the client to
+      // attach to the running worker instead.
+      const liveInfo = liveSessionFor(String(sessionId || ''));
+      if (liveInfo) {
+        return json(res, 409, { error: 'session is live', live: true, short: liveInfo.jobId, cwd: liveInfo.cwd });
+      }
       const sum = sessionSummary(tp);
       const cwd = sum?.cwd && fs.existsSync(sum.cwd) ? sum.cwd : process.env.HOME;
-      // Dispatch a background continuation of the session via the Claude Code
-      // daemon. args-array spawn → never shell-interpreted; the `--` argv
-      // terminator ensures a message starting with "-" can't smuggle a flag.
+      // Session has ended → `--bg --resume` is a genuine continuation of the
+      // thread (not a competing fork). args-array spawn → never shell-interpreted;
+      // the `--` terminator stops a message starting with "-" smuggling a flag.
       const child = spawn('claude', ['--bg', '--resume', sessionId, '--', message], {
         cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -266,6 +299,20 @@ const server = http.createServer(async (req, res) => {
         if (!settled) { settled = true; child.unref(); json(res, 200, { ok: true, output: 'dispatched (still starting)' }); }
       }, 15000);
       return;
+    }
+    // Open a live background session in a terminal via `claude attach <short>` —
+    // the correct way to reply to a running worker (no fork).
+    if (p === '/api/attach' && req.method === 'POST') {
+      const origin = req.headers.origin;
+      if (origin !== undefined && origin !== ORIGIN) return json(res, 403, { error: 'bad origin' });
+      if (!/^application\/json/.test(req.headers['content-type'] || '')) return json(res, 415, { error: 'json required' });
+      const body = await readBody(req);
+      const short = String(body.short || '');
+      if (!/^[0-9a-f]{6,12}$/.test(short)) return json(res, 400, { error: 'invalid session ref' });
+      return openAttach(short, (err) => {
+        if (err) return json(res, 500, { error: 'could not open terminal' });
+        json(res, 200, { ok: true });
+      });
     }
     if (p === '/api/open-terminal' && req.method === 'POST') {
       const body = await readBody(req);

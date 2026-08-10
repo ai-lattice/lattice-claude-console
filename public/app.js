@@ -81,15 +81,37 @@ async function openTerminal(cwd) {
 // Delegated actions — no inline JS with interpolated strings (XSS-safe:
 // values live in data-attributes and never re-enter a JS parsing context).
 document.addEventListener('click', (ev) => {
-  const el = ev.target.closest('[data-act]');
-  if (!el) return;
-  ev.preventDefault();
-  const { act, cwd, copyText, copyLabel } = el.dataset;
-  if (act === 'term' && cwd) openTerminal(cwd);
-  if (act === 'copy' && copyText != null) copy(copyText, copyLabel);
+  const btn = ev.target.closest('[data-act]');
+  if (btn) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    runAct(btn.dataset.act, btn.dataset);
+    return;
+  }
+  // Clicking anywhere on a nav-row (outside its buttons) opens it.
+  const row = ev.target.closest('.nav-row');
+  if (row && row.dataset.open) { selectRow(row); location.hash = row.dataset.open; }
 });
 
+function runAct(act, d) {
+  if (act === 'term' && d.cwd) openTerminal(d.cwd);
+  else if (act === 'copy' && d.copyText != null) copy(d.copyText, d.copyLabel);
+  else if (act === 'attach') attachSession(d.short);
+  else if (act === 'open' && d.open) location.hash = d.open;
+}
+
 const chip = (status) => `<span class="chip ${esc(status)}">${esc(status)}</span>`;
+
+// Inline action buttons available on a session/inbox row. Live sessions get
+// ATTACH (talk to the running worker); every row gets OPEN and, if it has a
+// cwd, a terminal shortcut. Keeps mouse parity with the keyboard shortcuts.
+function rowActions({ open, live, short, cwd }) {
+  const btns = [];
+  if (live && short) btns.push(`<button class="btn mini amber" data-act="attach" data-short="${esc(short)}" title="attach (a)">ATTACH</button>`);
+  btns.push(`<button class="btn mini" data-act="open" data-open="${esc(open)}" title="open (↵)">OPEN</button>`);
+  if (cwd) btns.push(`<button class="btn mini" data-act="term" data-cwd="${esc(cwd)}" title="terminal (t)">⇱</button>`);
+  return `<span class="row-actions">${btns.join('')}</span>`;
+}
 
 // ---------- views ----------
 async function viewFleet() {
@@ -108,13 +130,12 @@ async function viewFleet() {
 
   for (const p of data.projects) {
     const liveCount = p.sessions.filter((s) => s.live).length;
-    const cost = p.sessions.reduce((a, s) => a + (s.cost || 0), 0);
     const stubs = p.sessions.filter((s) => s.stub);
     const real = p.sessions.filter((s) => !s.stub);
     html += `<div class="panel">
       <div class="panel-head">
         <span class="proj-head-row"><span class="proj-name">${esc(p.name)}</span></span>
-        <span class="meta">${liveCount ? liveCount + ' live · ' : ''}${p.sessions.length} session${p.sessions.length > 1 ? 's' : ''} · ${fmtUsd(cost)}${
+        <span class="meta">${liveCount ? liveCount + ' live · ' : ''}${p.sessions.length} session${p.sessions.length > 1 ? 's' : ''}${
           p.cwd ? ` · <a href="#" data-act="term" data-cwd="${esc(p.cwd)}">open ⇱</a>` : ''
         }</span>
       </div>
@@ -124,31 +145,38 @@ async function viewFleet() {
   }
   if (!data.projects.length) html += `<div class="panel"><div class="empty">No Claude Code sessions found under ~/.claude/projects</div></div>`;
   main.innerHTML = html;
+  initNav();
 }
 
 function inboxItemHtml(it) {
-  return `<a class="inbox-item" href="#/session/${esc(it.projectKey)}/${esc(it.sessionId)}">
+  const open = `#/session/${esc(it.projectKey)}/${esc(it.sessionId)}`;
+  const acts = rowActions({ open, live: it.live, short: it.short, cwd: it.cwd });
+  return `<div class="inbox-item nav-row" tabindex="-1"
+      data-open="${open}" data-live="${it.live ? '1' : ''}" data-short="${esc(it.short || '')}" data-cwd="${esc(it.cwd || '')}">
     <div class="line1">
-      ${chip(it.type === 'waiting' ? 'waiting' : 'report')}
+      ${chip(it.type === 'waiting' ? 'waiting' : it.type === 'stalled' ? 'stalled' : 'report')}
       <b>${esc(it.title || shortId(it.sessionId))}</b>
       <span class="muted">${esc(it.project)}</span>
       <span class="ago" style="margin-left:auto">${ago(it.ts)}</span>
+      ${acts}
     </div>
     <div class="preview">${esc((it.preview || '').replace(/\s+/g, ' ').slice(0, 220))}</div>
-  </a>`;
+  </div>`;
 }
 
 function sessRowHtml(p, s) {
-  return `<a class="sess-row" href="#/session/${esc(p.key)}/${esc(s.sessionId)}">
+  const open = `#/session/${esc(p.key)}/${esc(s.sessionId)}`;
+  const acts = rowActions({ open, live: s.live, short: s.jobId, cwd: s.cwd || p.cwd });
+  return `<div class="sess-row nav-row" tabindex="-1"
+      data-open="${open}" data-live="${s.live ? '1' : ''}" data-short="${esc(s.jobId || '')}" data-cwd="${esc(s.cwd || p.cwd || '')}">
     <span>${chip(s.status)}</span>
     <span class="sess-title">
       <span class="t">${esc(s.title || shortId(s.sessionId))}</span>
       <span class="p">${esc((s.lastAssistantText || s.lastUserText || '').replace(/\s+/g, ' ').slice(0, 140))}</span>
     </span>
-    <span class="num tok">${fmtTok(s.inputTokens + s.outputTokens)} tok</span>
-    <span class="num cost ${s.cost > 50 ? 'hot' : ''}">${fmtUsd(s.cost)}</span>
     <span class="ago">${ago(s.lastTs)}</span>
-  </a>`;
+    ${acts}
+  </div>`;
 }
 
 async function viewInbox() {
@@ -160,6 +188,7 @@ async function viewInbox() {
     ${items.length ? items.map(inboxItemHtml).join('') : `<div class="empty">Nothing needs you. The fleet is quiet.</div>`}
   </div>`;
   main.innerHTML = html;
+  initNav();
 }
 
 async function viewJobs() {
@@ -239,7 +268,7 @@ async function viewSearch() {
 
 const localMonth = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 
-async function viewCosts() {
+async function viewUsage() {
   const now = new Date();
   const thisMonth = localMonth(now); // local, matches server-side local-day bucketing
   const raw = new URLSearchParams(location.hash.split('?')[1] || '').get('month');
@@ -250,67 +279,63 @@ async function viewCosts() {
   const months = [];
   for (let i = 0; i < 6; i++) months.push(localMonth(new Date(now.getFullYear(), now.getMonth() - i, 1)));
 
-  const grand = rows.reduce((a, r) => a + r.monthCost, 0);
-  const grandAll = rows.reduce((a, r) => a + r.totalCost, 0);
-
-  let html = `<h1 class="view-title"><span class="accent">04</span> COSTS &amp; USAGE</h1>
-  <div class="toolbar">
-    <select id="month-sel">
-      <option value="">All time</option>
-      ${months.map((m) => `<option value="${m}" ${m === month ? 'selected' : ''}>${m}</option>`).join('')}
-    </select>
-    <a class="btn" href="/api/usage.csv${month ? `?month=${encodeURIComponent(month)}` : ''}" download>EXPORT CSV${month ? ' · ' + esc(month) : ''}</a>
-    <span class="muted" style="margin-left:auto">estimates at list price — cache-aware</span>
-  </div>`;
-
-  html += `<div class="panel"><table class="data">
-    <tr><th>PROJECT</th><th>ACTIVITY</th><th class="r">SESSIONS</th><th class="r">MODELS</th><th class="r">${month ? esc(month) : 'ALL-TIME'} COST</th></tr>
-    ${rows
-      .filter((r) => !month || r.monthCost > 0.0001)
-      .map((r) => `<tr>
-        <td>${esc(r.name)}</td>
-        <td>${sparkline(r.byDay)}</td>
-        <td class="r">${r.sessions}</td>
-        <td class="r">${Object.keys(r.models).map(modelShort).map(esc).join(', ')}</td>
-        <td class="r">${fmtUsd(month ? r.monthCost : r.totalCost)}</td>
-      </tr>`).join('')}
-    <tr class="total"><td>TOTAL</td><td></td><td></td><td></td><td class="r">${fmtUsd(month ? grand : grandAll)}</td></tr>
-  </table></div>`;
-
-  // per-model breakdown
+  // Aggregate provable numbers directly from usage records (requests + token
+  // categories). Cost is derived from list prices → labelled an estimate.
+  const agg = { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   const modelAgg = {};
   for (const r of rows)
     for (const [m, v] of Object.entries(r.models)) {
-      const t = (modelAgg[m] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, requests: 0 });
-      for (const k of Object.keys(t)) t[k] += v[k] || 0;
+      const t = (modelAgg[m] ??= { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+      for (const k of ['requests', 'input', 'output', 'cacheRead', 'cacheWrite', 'cost']) t[k] += v[k] || 0;
+      for (const k of Object.keys(agg)) agg[k] += v[k] || 0;
     }
-  html += `<div class="panel"><div class="panel-head">BY MODEL <span class="meta">all-time token totals</span></div>
+  const estCost = rows.reduce((a, r) => a + (month ? r.monthCost : r.totalCost), 0);
+
+  let html = `<h1 class="view-title"><span class="accent">05</span> USAGE</h1>
+  <div class="toolbar">
+    <select id="month-sel">
+      <option value="">All time</option>
+      ${months.map((m) => `<option value="${esc(m)}" ${m === month ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+    </select>
+    <a class="btn" href="/api/usage.csv${month ? `?month=${encodeURIComponent(month)}` : ''}" download>EXPORT CSV${month ? ' · ' + esc(month) : ''}</a>
+  </div>`;
+
+  // Headline: provable token counts, each category separate (no misleading sum).
+  html += `<div class="stat-row">
+    ${stat('REQUESTS', fmtTok(agg.requests))}
+    ${stat('INPUT (new)', fmtTok(agg.input), 'fresh prompt tokens')}
+    ${stat('OUTPUT', fmtTok(agg.output), 'generated tokens')}
+    ${stat('CACHE READ', fmtTok(agg.cacheRead), 'reused context — cheap, not new work')}
+    ${stat('CACHE WRITE', fmtTok(agg.cacheWrite), 'context written to cache')}
+    ${stat('EST. COST', fmtUsd(estCost), 'list-price estimate — not your billed rate')}
+  </div>`;
+
+  html += `<div class="panel"><div class="panel-head">BY MODEL
+    <span class="meta">${month ? esc(month) : 'all time'} · token counts are exact; cost is a list-price estimate</span></div>
   <table class="data">
-    <tr><th>MODEL</th><th class="r">REQUESTS</th><th class="r">INPUT</th><th class="r">OUTPUT</th><th class="r">CACHE READ</th><th class="r">CACHE WRITE</th><th class="r">COST</th></tr>
+    <tr><th>MODEL</th><th class="r">REQUESTS</th><th class="r">INPUT</th><th class="r">OUTPUT</th><th class="r">CACHE READ</th><th class="r">CACHE WRITE</th><th class="r">EST. COST</th></tr>
     ${Object.entries(modelAgg)
-      .sort((a, b) => b[1].cost - a[1].cost)
+      .sort((a, b) => b[1].requests - a[1].requests)
       .map(([m, v]) => `<tr>
         <td>${esc(modelShort(m))}</td><td class="r">${fmtTok(v.requests)}</td>
         <td class="r">${fmtTok(v.input)}</td><td class="r">${fmtTok(v.output)}</td>
         <td class="r">${fmtTok(v.cacheRead)}</td><td class="r">${fmtTok(v.cacheWrite)}</td>
-        <td class="r">${fmtUsd(v.cost)}</td>
-      </tr>`).join('')}
+        <td class="r muted">${fmtUsd(v.cost)}</td>
+      </tr>`).join('') || '<tr><td colspan="7" class="empty">No usage recorded.</td></tr>'}
   </table></div>`;
 
   main.innerHTML = html;
-  $('#month-sel').addEventListener('change', (e) => {
-    location.hash = '#/costs' + (e.target.value ? `?month=${e.target.value}` : '?month=');
+  $('#month-sel')?.addEventListener('change', (e) => {
+    location.hash = '#/usage' + (e.target.value ? `?month=${e.target.value}` : '?month=');
   });
 }
 
-function sparkline(byDay) {
-  const days = Object.keys(byDay).sort().slice(-21);
-  if (!days.length) return '<span class="muted">—</span>';
-  const max = Math.max(...days.map((d) => byDay[d]));
-  return `<span class="spark">${days
-    .map((d) => `<i style="height:${Math.max(2, Math.round((byDay[d] / max) * 18))}px" title="${esc(d)}: ${fmtUsd(byDay[d])}"></i>`)
-    .join('')}</span>`;
+function stat(label, value, hint) {
+  return `<div class="stat"><div class="stat-v">${esc(value)}</div><div class="stat-k">${esc(label)}</div>${
+    hint ? `<div class="stat-h">${esc(hint)}</div>` : ''
+  }</div>`;
 }
+
 
 async function viewSession(projectKey, sessionId) {
   const d = await api(`/api/session/${projectKey}/${sessionId}`);
@@ -344,28 +369,58 @@ async function viewSession(projectKey, sessionId) {
     ${entries.map(entryHtml).join('') || '<div class="empty">No conversation yet.</div>'}
     </div></div>`;
 
-  // composer — send a prompt without touching the terminal
-  html += `<div class="composer panel">
-    <form id="composer-form">
-      <textarea id="composer-input" rows="2" placeholder="${
-        status === 'working' ? 'Session is busy — sending forks a parallel continuation…' : 'Send a message to this session…'
-      }" spellcheck="false"></textarea>
-      <div class="composer-foot">
-        <span class="muted">continues via <code>claude --bg --resume</code> — the console follows the continuation automatically</span>
-        <button class="btn amber" type="submit">SEND ▸</button>
+  // composer — behavior depends on whether the session is live.
+  // A LIVE session is held by a running worker; sending would fork a second
+  // one, so we attach to the real worker in a terminal instead. Only an ENDED
+  // session is safe to continue from here (a genuine continuation, not a fork).
+  if (d.live) {
+    html += `<div class="composer panel live-attach">
+      <div class="attach-note">
+        <span class="chip ${esc(status)}">${esc(status)}</span>
+        This session is <b>live</b> — a worker (pid ${d.pid ?? '—'}) is holding it.
+        Sending from here would fork a <em>second</em> session onto the same thread.
+        Reply to the running agent directly instead:
       </div>
-    </form>
-  </div>`;
+      <div class="composer-foot">
+        <span class="muted">opens a terminal running <code>claude attach ${esc(d.job?.id || '')}</code></span>
+        <button class="btn amber" data-act="attach" data-short="${esc(d.job?.id || '')}">ATTACH IN TERMINAL ▸</button>
+      </div>
+    </div>`;
+  } else {
+    html += `<div class="composer panel">
+      <form id="composer-form">
+        <textarea id="composer-input" rows="2" placeholder="Continue this ended session…" spellcheck="false"></textarea>
+        <div class="composer-foot">
+          <span class="muted">continues via <code>claude --bg --resume</code> — the console follows the continuation automatically</span>
+          <button class="btn amber" type="submit">SEND ▸</button>
+        </div>
+      </form>
+    </div>`;
+  }
 
   main.innerHTML = html;
   main.scrollTop = main.scrollHeight;
   wireComposer(projectKey, sessionId);
 }
 
+async function attachSession(short) {
+  if (!short) { toast('NO LIVE REF'); return; }
+  toast('OPENING TERMINAL…');
+  try {
+    const r = await fetch('/api/attach', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ short }),
+    });
+    if (!r.ok) throw new Error();
+    toast('ATTACHED — REPLY IN TERMINAL');
+  } catch { toast('COULD NOT ATTACH'); }
+}
+
 function wireComposer(projectKey, sessionId) {
   const form = $('#composer-form');
   const input = $('#composer-input');
-  if (!form) return;
+  if (!form || !input) return; // live sessions render an attach panel, no form
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
   });
@@ -382,6 +437,12 @@ function wireComposer(projectKey, sessionId) {
         body: JSON.stringify({ projectKey, sessionId, message }),
       });
       const body = await r.json();
+      // Session went live between render and send → attach instead of forking.
+      if (r.status === 409 && body.live) {
+        toast('SESSION IS LIVE — ATTACHING');
+        attachSession(body.short);
+        return;
+      }
       if (!r.ok) throw new Error(body.error || 'send failed');
       input.value = '';
       toast('SENT — FOLLOWING SESSION');
@@ -394,6 +455,60 @@ function wireComposer(projectKey, sessionId) {
     }
   });
 }
+
+// ---------- keyboard navigation across rows ----------
+// Any view that renders `.nav-row` elements calls initNav() after paint.
+// One selection cursor moves with ↑/↓ or j/k; shortcuts act on the selected
+// row (↵ open, a attach, t terminal, r reply). Mouse users get the same via
+// the inline row-action buttons — full keyboard/mouse parity.
+let navRows = [];
+let navIdx = -1;
+function initNav() {
+  navRows = [...main.querySelectorAll('.nav-row')];
+  navIdx = navRows.length ? 0 : -1;
+  paintNav();
+}
+function paintNav() {
+  navRows.forEach((r, i) => r.classList.toggle('selected', i === navIdx));
+}
+function selectRow(row) {
+  const i = navRows.indexOf(row);
+  if (i >= 0) { navIdx = i; paintNav(); }
+}
+function moveNav(delta) {
+  if (!navRows.length) return;
+  navIdx = (navIdx + delta + navRows.length) % navRows.length;
+  paintNav();
+  navRows[navIdx].scrollIntoView({ block: 'nearest' });
+}
+function selectedRow() {
+  return navIdx >= 0 ? navRows[navIdx] : null;
+}
+
+document.addEventListener('keydown', (e) => {
+  // Never hijack typing in the composer/search box.
+  const a = document.activeElement;
+  if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) {
+    if (e.key === 'Escape') a.blur();
+    return;
+  }
+  // View shortcuts (single keys) — g-prefix-free for speed.
+  if (e.key === 'g') return; // reserved, no-op
+  const routes = { '1': '#/', '2': '#/inbox', '3': '#/jobs', '4': '#/search', '5': '#/usage' };
+  if (routes[e.key]) { location.hash = routes[e.key]; return; }
+  if (e.key === '/') { e.preventDefault(); location.hash = '#/search'; return; }
+
+  if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); moveNav(1); return; }
+  if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); moveNav(-1); return; }
+
+  const row = selectedRow();
+  if (!row) return;
+  const d = row.dataset;
+  if (e.key === 'Enter' || e.key === 'o') { e.preventDefault(); if (d.open) location.hash = d.open; }
+  else if (e.key === 'a') { if (d.live && d.short) attachSession(d.short); }
+  else if (e.key === 't') { if (d.cwd) openTerminal(d.cwd); }
+  else if (e.key === 'r') { if (d.open) location.hash = d.open; } // reply = open (composer/attach lives there)
+});
 
 // A --resume dispatch forks to a new session id; poll jobs until the fork
 // registers, then navigate so the live tail lands on the continuation.
@@ -417,9 +532,11 @@ function entryHtml(e) {
     return `<div class="entry meta"><span class="who cmd">⌘</span>
       <div class="body"><span class="cmd-chip">${esc(e.text)}</span></div></div>`;
   }
-  if (e.kind === 'meta') {
+  // System notices (model auto-switch/fallback, reminders) are harness chrome,
+  // not conversation — render dim and compact so they don't read as a turn.
+  if (e.kind === 'meta' || e.kind === 'system') {
     return `<div class="entry meta"><span class="who">SYS</span>
-      <div class="body"><span class="meta-text">${esc(e.text.slice(0, 260))}</span></div></div>`;
+      <div class="body"><span class="meta-text">${esc(e.text.slice(0, 300))}</span></div></div>`;
   }
   const who = e.kind === 'user' ? 'YOU' : e.kind === 'assistant' ? modelShort(e.model || 'claude').toUpperCase() : 'SYS';
   let body = '';
@@ -451,8 +568,8 @@ const routes = [
   { re: /^#?\/?$/, view: viewFleet, nav: 'fleet' },
   { re: /^#\/inbox$/, view: viewInbox, nav: 'inbox' },
   { re: /^#\/jobs$/, view: viewJobs, nav: 'jobs' },
-  { re: /^#\/costs/, view: viewCosts, nav: 'costs' },
   { re: /^#\/search/, view: viewSearch, nav: 'search' },
+  { re: /^#\/(usage|costs)/, view: viewUsage, nav: 'usage' }, // /costs kept as alias
   { re: /^#\/session\/([^/]+)\/([^/?]+)/, view: viewSession, nav: 'fleet' },
 ];
 
