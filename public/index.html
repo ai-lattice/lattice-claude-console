@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lattice Console</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⌬</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="frame">
+  <header class="topbar">
+    <div class="wordmark">
+      <span class="glyph">⌬</span>
+      <span class="brand">LATTICE</span><span class="sep">//</span><span class="sub">CLAUDE&nbsp;CONSOLE</span>
+    </div>
+    <div class="topbar-right">
+      <span id="conn" class="conn" title="live feed">● LIVE</span>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <nav class="rail">
+    <a href="#/" data-view="fleet"><span class="k">01</span>FLEET</a>
+    <a href="#/inbox" data-view="inbox"><span class="k">02</span>INBOX <span id="inbox-badge" class="badge" hidden></span></a>
+    <a href="#/jobs" data-view="jobs"><span class="k">03</span>JOBS</a>
+    <a href="#/costs" data-view="costs"><span class="k">04</span>COSTS</a>
+    <a href="#/search" data-view="search"><span class="k">05</span>SEARCH</a>
+    <div class="rail-foot">
+      <div class="tick"></div>
+      <span id="foot-stats"></span>
+    </div>
+  </nav>
+
+  <main id="main" class="main"></main>
+</div>
+<div class="scanlines" aria-hidden="true"></div>
+<div id="toast" class="toast" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

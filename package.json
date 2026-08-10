@@ -1,0 +1,14 @@
+{
+  "name": "lattice-claude-console",
+  "version": "0.1.0",
+  "description": "Local mission-control console for Claude Code sessions, jobs, and costs",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test 'test/**/*.test.mjs'"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
