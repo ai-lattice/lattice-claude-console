@@ -98,6 +98,11 @@ function runAct(act, d) {
   else if (act === 'copy' && d.copyText != null) copy(d.copyText, d.copyLabel);
   else if (act === 'attach') attachSession(d.short);
   else if (act === 'open' && d.open) location.hash = d.open;
+  else if (act === 'toggle-ended') {
+    if (expandedEnded.has(d.key)) expandedEnded.delete(d.key);
+    else expandedEnded.add(d.key);
+    if (currentRender) currentRender();
+  }
 }
 
 const chip = (status) => `<span class="chip ${esc(status)}">${esc(status)}</span>`;
@@ -113,40 +118,75 @@ function rowActions({ open, live, short, cwd }) {
   return `<span class="row-actions">${btns.join('')}</span>`;
 }
 
+// "Waiting on you" = genuinely blocked on your input (waiting/stalled).
+// Reports are FINISHED work to review, not something awaiting a reply — kept
+// separate so the attention count matches `claude agents` ("N awaiting input").
+const needsInput = (items) => items.filter((i) => i.type === 'waiting' || i.type === 'stalled');
+const finished = (items) => items.filter((i) => i.type === 'report');
+
 // ---------- views ----------
 async function viewFleet() {
   const [data, inboxItems] = await Promise.all([api('/api/fleet?days=14'), api('/api/inbox')]);
-  setBadge(inboxItems.length);
+  const waiting = needsInput(inboxItems);
+  const done = finished(inboxItems);
+  setBadge(waiting.length);
   footStats(data);
 
   let html = `<h1 class="view-title"><span class="accent">01</span> FLEET</h1>`;
 
-  if (inboxItems.length) {
+  if (waiting.length) {
     html += `<div class="panel inbox-strip">
-      <div class="panel-head">▲ WAITING ON YOU <span class="meta">${inboxItems.length} item${inboxItems.length > 1 ? 's' : ''}</span></div>
-      ${inboxItems.slice(0, 5).map(inboxItemHtml).join('')}
+      <div class="panel-head">▲ WAITING ON YOU <span class="meta">${waiting.length} awaiting input</span></div>
+      ${waiting.slice(0, 6).map(inboxItemHtml).join('')}
+    </div>`;
+  }
+  if (done.length) {
+    html += `<div class="panel finished-strip">
+      <div class="panel-head">✓ FINISHED — REVIEW <span class="meta">${done.length} report${done.length > 1 ? 's' : ''}</span></div>
+      ${done.slice(0, 5).map(inboxItemHtml).join('')}
     </div>`;
   }
 
-  for (const p of data.projects) {
+  // Only show projects with something active or a pending report by default —
+  // a work console surfaces live/actionable work, not historical sessions.
+  const projectsToShow = data.projects.filter((p) => {
+    const active = p.sessions.some((s) => !s.stub && (s.live || s.status === 'done'));
+    return active || expandedEnded.has(p.key);
+  });
+
+  for (const p of projectsToShow) {
     const liveCount = p.sessions.filter((s) => s.live).length;
-    const stubs = p.sessions.filter((s) => s.stub);
-    const real = p.sessions.filter((s) => !s.stub);
+    // Active = live workers or a finished report. Everything else (ended,
+    // stubs) is history — collapsed behind a toggle so it isn't wall-of-noise.
+    const active = p.sessions.filter((s) => !s.stub && (s.live || s.status === 'done'));
+    const hidden = p.sessions.filter((s) => s.stub || (!s.live && s.status !== 'done'));
+    const isExp = expandedEnded.has(p.key);
     html += `<div class="panel">
       <div class="panel-head">
         <span class="proj-head-row"><span class="proj-name">${esc(p.name)}</span></span>
-        <span class="meta">${liveCount ? liveCount + ' live · ' : ''}${p.sessions.length} session${p.sessions.length > 1 ? 's' : ''}${
+        <span class="meta">${liveCount ? liveCount + ' live · ' : ''}${active.length} active${
           p.cwd ? ` · <a href="#" data-act="term" data-cwd="${esc(p.cwd)}">open ⇱</a>` : ''
         }</span>
       </div>
-      ${real.map((s) => sessRowHtml(p, s)).join('')}
-      ${stubs.length ? `<div class="stub-row">+ ${stubs.length} older session${stubs.length > 1 ? 's' : ''} (touched &gt;14d ago)</div>` : ''}
+      ${active.map((s) => sessRowHtml(p, s)).join('') || '<div class="stub-row">No active sessions.</div>'}
+      ${isExp ? hidden.filter((s) => !s.stub).map((s) => sessRowHtml(p, s)).join('') : ''}
+      ${hidden.length ? `<div class="stub-row toggle-ended" data-act="toggle-ended" data-key="${esc(p.key)}">${
+        isExp ? '▾ hide' : `▸ ${hidden.length} ended/older session${hidden.length > 1 ? 's' : ''}`
+      }</div>` : ''}
     </div>`;
+  }
+
+  const hiddenProjects = data.projects.length - projectsToShow.length;
+  if (hiddenProjects > 0) {
+    html += `<div class="stub-row" style="padding:10px 14px">${hiddenProjects} project${hiddenProjects > 1 ? 's' : ''} with only ended sessions — find them in Search.</div>`;
   }
   if (!data.projects.length) html += `<div class="panel"><div class="empty">No Claude Code sessions found under ~/.claude/projects</div></div>`;
   main.innerHTML = html;
   initNav();
 }
+
+// Projects whose ended sessions the user chose to expand (survives re-render).
+const expandedEnded = new Set();
 
 function inboxItemHtml(it) {
   const open = `#/session/${esc(it.projectKey)}/${esc(it.sessionId)}`;
@@ -181,12 +221,20 @@ function sessRowHtml(p, s) {
 
 async function viewInbox() {
   const items = await api('/api/inbox');
-  setBadge(items.length);
-  let html = `<h1 class="view-title"><span class="accent">02</span> INBOX — WAITING ON YOU</h1>`;
+  const waiting = needsInput(items);
+  const done = finished(items);
+  setBadge(waiting.length);
+  let html = `<h1 class="view-title"><span class="accent">02</span> INBOX</h1>`;
   html += `<div class="panel inbox-strip">
-    <div class="panel-head">▲ ATTENTION QUEUE <span class="meta">${items.length} item${items.length !== 1 ? 's' : ''}</span></div>
-    ${items.length ? items.map(inboxItemHtml).join('') : `<div class="empty">Nothing needs you. The fleet is quiet.</div>`}
+    <div class="panel-head">▲ WAITING ON YOU <span class="meta">${waiting.length} awaiting input</span></div>
+    ${waiting.length ? waiting.map(inboxItemHtml).join('') : `<div class="empty">Nothing is blocked on you. The fleet is running.</div>`}
   </div>`;
+  if (done.length) {
+    html += `<div class="panel finished-strip">
+      <div class="panel-head">✓ FINISHED — REVIEW <span class="meta">${done.length} report${done.length > 1 ? 's' : ''}</span></div>
+      ${done.map(inboxItemHtml).join('')}
+    </div>`;
+  }
   main.innerHTML = html;
   initNav();
 }
@@ -279,17 +327,16 @@ async function viewUsage() {
   const months = [];
   for (let i = 0; i < 6; i++) months.push(localMonth(new Date(now.getFullYear(), now.getMonth() - i, 1)));
 
-  // Aggregate provable numbers directly from usage records (requests + token
-  // categories). Cost is derived from list prices → labelled an estimate.
+  // Provable numbers only — request + token counts straight from the usage
+  // records. No dollar cost: on a subscription a list-price figure is wrong
+  // and misleading, so it's not shown.
   const agg = { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   const modelAgg = {};
   for (const r of rows)
     for (const [m, v] of Object.entries(r.models)) {
-      const t = (modelAgg[m] ??= { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
-      for (const k of ['requests', 'input', 'output', 'cacheRead', 'cacheWrite', 'cost']) t[k] += v[k] || 0;
-      for (const k of Object.keys(agg)) agg[k] += v[k] || 0;
+      const t = (modelAgg[m] ??= { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+      for (const k of Object.keys(agg)) { t[k] += v[k] || 0; agg[k] += v[k] || 0; }
     }
-  const estCost = rows.reduce((a, r) => a + (month ? r.monthCost : r.totalCost), 0);
 
   let html = `<h1 class="view-title"><span class="accent">05</span> USAGE</h1>
   <div class="toolbar">
@@ -305,23 +352,21 @@ async function viewUsage() {
     ${stat('REQUESTS', fmtTok(agg.requests))}
     ${stat('INPUT (new)', fmtTok(agg.input), 'fresh prompt tokens')}
     ${stat('OUTPUT', fmtTok(agg.output), 'generated tokens')}
-    ${stat('CACHE READ', fmtTok(agg.cacheRead), 'reused context — cheap, not new work')}
+    ${stat('CACHE READ', fmtTok(agg.cacheRead), 'reused context — not new work')}
     ${stat('CACHE WRITE', fmtTok(agg.cacheWrite), 'context written to cache')}
-    ${stat('EST. COST', fmtUsd(estCost), 'list-price estimate — not your billed rate')}
   </div>`;
 
   html += `<div class="panel"><div class="panel-head">BY MODEL
-    <span class="meta">${month ? esc(month) : 'all time'} · token counts are exact; cost is a list-price estimate</span></div>
+    <span class="meta">${month ? esc(month) : 'all time'} · exact token counts from session records</span></div>
   <table class="data">
-    <tr><th>MODEL</th><th class="r">REQUESTS</th><th class="r">INPUT</th><th class="r">OUTPUT</th><th class="r">CACHE READ</th><th class="r">CACHE WRITE</th><th class="r">EST. COST</th></tr>
+    <tr><th>MODEL</th><th class="r">REQUESTS</th><th class="r">INPUT</th><th class="r">OUTPUT</th><th class="r">CACHE READ</th><th class="r">CACHE WRITE</th></tr>
     ${Object.entries(modelAgg)
       .sort((a, b) => b[1].requests - a[1].requests)
       .map(([m, v]) => `<tr>
         <td>${esc(modelShort(m))}</td><td class="r">${fmtTok(v.requests)}</td>
         <td class="r">${fmtTok(v.input)}</td><td class="r">${fmtTok(v.output)}</td>
         <td class="r">${fmtTok(v.cacheRead)}</td><td class="r">${fmtTok(v.cacheWrite)}</td>
-        <td class="r muted">${fmtUsd(v.cost)}</td>
-      </tr>`).join('') || '<tr><td colspan="7" class="empty">No usage recorded.</td></tr>'}
+      </tr>`).join('') || '<tr><td colspan="6" class="empty">No usage recorded.</td></tr>'}
   </table></div>`;
 
   main.innerHTML = html;
@@ -340,7 +385,6 @@ function stat(label, value, hint) {
 async function viewSession(projectKey, sessionId) {
   const d = await api(`/api/session/${projectKey}/${sessionId}`);
   const status = d.live ? (d.liveStatus === 'busy' ? 'working' : d.lastType === 'assistant' ? 'waiting' : 'idle') : d.job?.state === 'done' ? 'done' : 'ended';
-  const totCost = Object.values(d.usage || {}).reduce((a, m) => a + m.cost, 0);
 
   let html = `<h1 class="view-title"><span class="accent">⌁</span> SESSION</h1>
   <div class="panel">
@@ -350,7 +394,6 @@ async function viewSession(projectKey, sessionId) {
       <span class="kv">dir <b>${esc(d.cwd || '—')}</b></span>
       ${d.gitBranch ? `<span class="kv">branch <b>${esc(d.gitBranch)}</b></span>` : ''}
       <span class="kv">turns <b>${d.turns}</b></span>
-      <span class="kv">cost <b>${fmtUsd(totCost)}</b></span>
       <span class="kv">last <b>${ago(d.lastTs)}</b></span>
       ${d.pid ? `<span class="kv">pid <b>${d.pid}</b></span>` : ''}
     </div>
@@ -492,8 +535,13 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') a.blur();
     return;
   }
+  // Escape / Backspace → back out to Fleet (keyboard escape route from any view).
+  if (e.key === 'Escape' || (e.key === 'Backspace' && !/^#\/?$/.test(location.hash))) {
+    e.preventDefault();
+    if (!/^#\/?$/.test(location.hash || '#/')) location.hash = '#/';
+    return;
+  }
   // View shortcuts (single keys) — g-prefix-free for speed.
-  if (e.key === 'g') return; // reserved, no-op
   const routes = { '1': '#/', '2': '#/inbox', '3': '#/jobs', '4': '#/search', '5': '#/usage' };
   if (routes[e.key]) { location.hash = routes[e.key]; return; }
   if (e.key === '/') { e.preventDefault(); location.hash = '#/search'; return; }
@@ -504,10 +552,18 @@ document.addEventListener('keydown', (e) => {
   const row = selectedRow();
   if (!row) return;
   const d = row.dataset;
+  const isLive = d.live === '1';
   if (e.key === 'Enter' || e.key === 'o') { e.preventDefault(); if (d.open) location.hash = d.open; }
-  else if (e.key === 'a') { if (d.live && d.short) attachSession(d.short); }
-  else if (e.key === 't') { if (d.cwd) openTerminal(d.cwd); }
-  else if (e.key === 'r') { if (d.open) location.hash = d.open; } // reply = open (composer/attach lives there)
+  else if (e.key === 'a' || e.key === 'r') {
+    // act on it: live → attach to the running worker; ended → open (composer)
+    if (isLive && d.short) attachSession(d.short);
+    else if (d.open) location.hash = d.open;
+  } else if (e.key === 't') {
+    // 't' = get me to this session in a terminal: live → attach INTO it;
+    // ended → open its folder (there's no live worker to attach to).
+    if (isLive && d.short) attachSession(d.short);
+    else if (d.cwd) openTerminal(d.cwd);
+  }
 });
 
 // A --resume dispatch forks to a new session id; poll jobs until the fork

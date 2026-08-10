@@ -210,13 +210,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/usage.csv') {
       const month = validMonth(url.searchParams.get('month'));
       const rows = usageRollup({ month });
-      // month-scoped per-model cost when a month is set, so rows reconcile to the total
-      const costCol = (m) => (month ? m.monthCost : m.cost).toFixed(4);
-      let csv = 'project,sessions,model,requests,input_tokens,output_tokens,cache_read,cache_write,cost_usd\n';
+      let csv = 'project,sessions,model,requests,input_tokens,output_tokens,cache_read,cache_write\n';
       for (const proj of rows) {
         for (const [model, m] of Object.entries(proj.models)) {
           if (month && m.monthCost <= 0) continue;
-          csv += [JSON.stringify(proj.name), proj.sessions, model, m.requests, m.input, m.output, m.cacheRead, m.cacheWrite, costCol(m)].join(',') + '\n';
+          csv += [JSON.stringify(proj.name), proj.sessions, model, m.requests, m.input, m.output, m.cacheRead, m.cacheWrite].join(',') + '\n';
         }
       }
       res.writeHead(200, {
