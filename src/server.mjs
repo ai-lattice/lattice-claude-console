@@ -265,7 +265,7 @@ const server = http.createServer(async (req, res) => {
       // transcript lineage (the "two sessions in claude agents" surprise, and
       // two agents competing on one thread). Refuse to fork; tell the client to
       // attach to the running worker instead.
-      const liveInfo = liveSessionFor(String(sessionId || ''));
+      const liveInfo = liveSessionFor(String(projectKey || ''), String(sessionId || ''));
       if (liveInfo) {
         return json(res, 409, { error: 'session is live', live: true, short: liveInfo.jobId, cwd: liveInfo.cwd });
       }

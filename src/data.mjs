@@ -9,6 +9,9 @@ import { sessionSummary, sessionDetail, sessionUsage } from './transcript.mjs';
 
 export const CLAUDE_DIR = process.env.CLAUDE_DIR || path.join(os.homedir(), '.claude');
 
+// Flatten a cwd to its ~/.claude/projects dir key (path separators → dashes).
+const projectKeyForCwd = (cwd) => (cwd ? cwd.replaceAll('/', '-') : null);
+
 function readJson(p) {
   try {
     return JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -60,10 +63,22 @@ export function liveSessions() {
   return out;
 }
 
-// The live worker (if any) currently holding a given session — used to decide
-// whether a message can be delivered to a running agent vs. would fork it.
-export function liveSessionFor(sessionId) {
-  return liveSessions().find((s) => s.sessionId === sessionId) || null;
+// The live worker (if any) holding a given session — exact sessionId match,
+// else cwd fallback (a live worker in this project + this being the newest
+// transcript). Decides whether a message would reach a running agent vs fork.
+export function liveSessionFor(projectKey, sessionId) {
+  const live = liveSessions();
+  const exact = live.find((s) => s.sessionId === sessionId);
+  if (exact) return exact;
+  if (!projectKey) return null;
+  const projLive = live.find((s) => projectKeyForCwd(s.cwd) === projectKey);
+  if (!projLive) return null;
+  const newest = transcriptsIn(projectKey)
+    .filter((t) => !t.subagentOf)
+    .map((t) => { try { return { id: t.sessionId, m: fs.statSync(t.path).mtimeMs }; } catch { return null; } })
+    .filter(Boolean)
+    .sort((a, b) => b.m - a.m)[0];
+  return newest && newest.id === sessionId ? projLive : null;
 }
 
 // --- Background jobs (~/.claude/jobs/<id>/state.json) ---
@@ -168,6 +183,17 @@ export function projectDisplayName(key, cwd) {
 export function fleet({ recentDays = 14 } = {}) {
   const live = liveSessions();
   const liveById = new Map(live.map((s) => [s.sessionId, s]));
+  // A live worker's registry sessionId often diverges from the transcript it's
+  // actually writing (resume/daemon relabeling — same class as fork id drift).
+  // `claude agents` tracks workers by cwd, so we do too: map project → live
+  // worker, and treat that project's newest transcript as the live one when an
+  // exact sessionId match fails. Without this, freshly-started sessions vanish.
+  const liveByProject = new Map();
+  for (const s of live) {
+    const k = projectKeyForCwd(s.cwd);
+    if (k && !liveByProject.has(k)) liveByProject.set(k, s);
+  }
+  const claimedProjects = new Set(); // projects whose live worker is already exact-matched
   const allJobs = jobs();
   const jobBySession = new Map(allJobs.map((j) => [j.sessionId, j]));
   const cutoff = Date.now() - recentDays * 86400e3;
@@ -205,6 +231,7 @@ export function fleet({ recentDays = 14 } = {}) {
       cwd = cwd || sum.cwd;
       const sub = subCost.get(t.sessionId);
       const liveInfo = liveById.get(t.sessionId) || null;
+      if (liveInfo) claimedProjects.add(proj.key); // exact match — no cwd fallback needed
       const job = jobBySession.get(t.sessionId) || null;
       sessions.push({
         ...sum,
@@ -223,6 +250,25 @@ export function fleet({ recentDays = 14 } = {}) {
       });
     }
     sessions.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+
+    // cwd fallback: project has a live worker but no transcript matched its id
+    // → the newest transcript is what that worker is writing. Mark it live.
+    const projLive = liveByProject.get(proj.key);
+    if (projLive && !claimedProjects.has(proj.key)) {
+      const newest = sessions.find((s) => !s.stub);
+      if (newest) {
+        cwd = cwd || projLive.cwd;
+        const job = jobBySession.get(newest.sessionId) || null;
+        Object.assign(newest, {
+          live: true,
+          liveStatus: projLive.status ?? null,
+          pid: projLive.pid ?? null,
+          jobId: newest.jobId || projLive.jobId || null,
+          status: computeStatus(projLive, job, newest),
+        });
+      }
+    }
+
     if (!sessions.length) continue;
     projects.push({
       key: proj.key,
@@ -424,7 +470,23 @@ export function getSessionDetail(projectKey, sessionId) {
   if (!p) return null;
   const detail = sessionDetail(p);
   if (!detail) return null;
-  const liveInfo = liveSessions().find((s) => s.sessionId === sessionId) || null;
+  const live = liveSessions();
+  // Exact sessionId match, else cwd fallback: a live worker in this project +
+  // this being the newest transcript = the session that worker is writing
+  // (mirrors fleet()'s liveness so a resumed/daemon session offers ATTACH,
+  // not a fork). Keeps detail-page liveness consistent with the fleet.
+  let liveInfo = live.find((s) => s.sessionId === sessionId) || null;
+  if (!liveInfo) {
+    const projLive = live.find((s) => projectKeyForCwd(s.cwd) === projectKey);
+    if (projLive) {
+      const newest = transcriptsIn(projectKey)
+        .filter((t) => !t.subagentOf)
+        .map((t) => { try { return { id: t.sessionId, m: fs.statSync(t.path).mtimeMs }; } catch { return null; } })
+        .filter(Boolean)
+        .sort((a, b) => b.m - a.m)[0];
+      if (newest && newest.id === sessionId) liveInfo = projLive;
+    }
+  }
   const job = jobs().find((j) => j.sessionId === sessionId) || null;
   return {
     ...detail,
@@ -432,6 +494,6 @@ export function getSessionDetail(projectKey, sessionId) {
     live: !!liveInfo,
     liveStatus: liveInfo?.status ?? null,
     pid: liveInfo?.pid ?? null,
-    job,
+    job: job || (liveInfo?.jobId ? { id: liveInfo.jobId } : null),
   };
 }

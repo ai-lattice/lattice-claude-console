@@ -103,6 +103,7 @@ function runAct(act, d) {
     else expandedEnded.add(d.key);
     if (currentRender) currentRender();
   }
+  else if (act === 'dismiss' && d.rkey) dismissReport(d.rkey);
 }
 
 const chip = (status) => `<span class="chip ${esc(status)}">${esc(status)}</span>`;
@@ -122,7 +123,21 @@ function rowActions({ open, live, short, cwd }) {
 // Reports are FINISHED work to review, not something awaiting a reply — kept
 // separate so the attention count matches `claude agents` ("N awaiting input").
 const needsInput = (items) => items.filter((i) => i.type === 'waiting' || i.type === 'stalled');
-const finished = (items) => items.filter((i) => i.type === 'report');
+
+// Dismissed (acknowledged) reports — persisted per-browser so a report you've
+// reviewed stays gone. Keyed by sessionId + ts so a *new* report on the same
+// session (a later run) re-surfaces rather than staying hidden.
+function loadDismissed() {
+  try { return new Set(JSON.parse(localStorage.getItem('lcc_dismissed') || '[]')); } catch { return new Set(); }
+}
+let dismissed = loadDismissed();
+const reportKey = (i) => `${i.sessionId}@${i.ts || ''}`;
+function dismissReport(key) {
+  dismissed.add(key);
+  try { localStorage.setItem('lcc_dismissed', JSON.stringify([...dismissed].slice(-500))); } catch {}
+  if (currentRender) currentRender();
+}
+const finished = (items) => items.filter((i) => i.type === 'report' && !dismissed.has(reportKey(i)));
 
 // ---------- views ----------
 async function viewFleet() {
@@ -140,12 +155,8 @@ async function viewFleet() {
       ${waiting.slice(0, 6).map(inboxItemHtml).join('')}
     </div>`;
   }
-  if (done.length) {
-    html += `<div class="panel finished-strip">
-      <div class="panel-head">✓ FINISHED — REVIEW <span class="meta">${done.length} report${done.length > 1 ? 's' : ''}</span></div>
-      ${done.slice(0, 5).map(inboxItemHtml).join('')}
-    </div>`;
-  }
+  // Finished reports are NOT duplicated here — the done session already shows
+  // in its project row below with a DONE chip. Review + dismiss lives in Inbox.
 
   // Only show projects with something active or a pending report by default —
   // a work console surfaces live/actionable work, not historical sessions.
@@ -191,14 +202,18 @@ const expandedEnded = new Set();
 function inboxItemHtml(it) {
   const open = `#/session/${esc(it.projectKey)}/${esc(it.sessionId)}`;
   const acts = rowActions({ open, live: it.live, short: it.short, cwd: it.cwd });
+  // Finished reports get a dismiss (acknowledge) button.
+  const dismiss = it.type === 'report'
+    ? `<button class="btn mini dismiss" data-act="dismiss" data-rkey="${esc(reportKey(it))}" title="dismiss (x)">✕</button>` : '';
   return `<div class="inbox-item nav-row" tabindex="-1"
-      data-open="${open}" data-live="${it.live ? '1' : ''}" data-short="${esc(it.short || '')}" data-cwd="${esc(it.cwd || '')}">
+      data-open="${open}" data-live="${it.live ? '1' : ''}" data-short="${esc(it.short || '')}" data-cwd="${esc(it.cwd || '')}"
+      data-rkey="${it.type === 'report' ? esc(reportKey(it)) : ''}">
     <div class="line1">
       ${chip(it.type === 'waiting' ? 'waiting' : it.type === 'stalled' ? 'stalled' : 'report')}
       <b>${esc(it.title || shortId(it.sessionId))}</b>
       <span class="muted">${esc(it.project)}</span>
       <span class="ago" style="margin-left:auto">${ago(it.ts)}</span>
-      ${acts}
+      ${acts}${dismiss}
     </div>
     <div class="preview">${esc((it.preview || '').replace(/\s+/g, ' ').slice(0, 220))}</div>
   </div>`;
@@ -563,6 +578,8 @@ document.addEventListener('keydown', (e) => {
     // ended → open its folder (there's no live worker to attach to).
     if (isLive && d.short) attachSession(d.short);
     else if (d.cwd) openTerminal(d.cwd);
+  } else if (e.key === 'x') {
+    if (d.rkey) dismissReport(d.rkey); // dismiss a finished report
   }
 });
 

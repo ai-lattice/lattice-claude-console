@@ -168,6 +168,8 @@ a:hover { text-decoration: underline; }
 .nav-row:hover .row-actions, .nav-row.selected .row-actions { opacity: 1; }
 .btn.mini { font-size: 9px; padding: 2px 7px; letter-spacing: 0.1em; }
 .inbox-item .row-actions { margin-left: 8px; }
+.btn.mini.dismiss { margin-left: 6px; color: var(--text-dim); border-color: var(--line); }
+.btn.mini.dismiss:hover { color: var(--red); border-color: var(--red); background: rgba(240,101,94,0.1); }
 .sess-title { min-width: 0; overflow: hidden; }
 .sess-title .t { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 .sess-title .p { color: var(--text-faint); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
