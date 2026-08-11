@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { sessionSummary, sessionDetail, sessionUsage } from './transcript.mjs';
+import { repoState, repoDiff } from './git.mjs';
 
 export const CLAUDE_DIR = process.env.CLAUDE_DIR || path.join(os.homedir(), '.claude');
 
@@ -280,6 +281,52 @@ export function fleet({ recentDays = 14 } = {}) {
   }
   projects.sort((a, b) => b.latestMs - a.latestMs);
   return { projects, live, jobs: allJobs };
+}
+
+// --- Review: the work-product surface (what each agent BUILT) ---
+// For every project with an active or recently-finished session, pair the
+// agent's own summary with the actual git changes it produced — the thing
+// claude agents / iTerm / tmux don't show. One card per project = review
+// without cd-ing into every repo.
+export function reviewFleet({ recentDays = 3 } = {}) {
+  const { projects } = fleet({ recentDays: 14 });
+  const cutoff = Date.now() - recentDays * 86400e3;
+  const cards = [];
+  for (const p of projects) {
+    const s = p.sessions.find((x) => !x.stub); // newest real session drives the card
+    if (!s) continue;
+    // Show a card if the session is live OR was touched recently OR has a report.
+    const recent = (s.mtimeMs || 0) >= cutoff;
+    if (!s.live && !recent && s.status !== 'done') continue;
+    const repo = p.cwd ? repoState(p.cwd) : { isRepo: false };
+    cards.push({
+      projectKey: p.key,
+      name: p.name,
+      cwd: p.cwd,
+      sessionId: s.sessionId,
+      title: s.title,
+      status: s.status,
+      live: s.live,
+      short: s.jobId,
+      pid: s.pid,
+      lastTs: s.lastTs,
+      summary: s.lastAssistantText || s.jobResult || s.jobDetail || null,
+      repo,
+    });
+  }
+  // Order: things needing review first — dirty repos & waiting/done, then rest.
+  const rank = (c) => (c.status === 'waiting' || c.status === 'stalled' ? 0 : c.repo?.dirty ? 1 : c.status === 'done' ? 2 : 3);
+  cards.sort((a, b) => rank(a) - rank(b) || (b.lastTs || '').localeCompare(a.lastTs || ''));
+  return cards;
+}
+
+export function getDiff(projectKey, sessionId) {
+  const p = transcriptPath(projectKey, sessionId);
+  if (!p) return null;
+  const sum = sessionSummary(p);
+  const cwd = sum?.cwd;
+  if (!cwd || !fs.existsSync(cwd)) return { isRepo: false, diff: '' };
+  return repoDiff(cwd);
 }
 
 // Status model:

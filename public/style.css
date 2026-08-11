@@ -250,6 +250,54 @@ tr.total td { border-top: 1px solid var(--line-bright); color: var(--amber); fon
 }
 @keyframes toastIn { from { transform: translateY(8px); opacity: 0; } }
 
+/* ---------- REVIEW cards (the work-product surface) ---------- */
+.review-card { padding: 0; cursor: default; }
+.review-card.selected { box-shadow: inset 2px 0 0 var(--amber); }
+.rc-head {
+  display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap;
+}
+.rc-title { font-family: var(--disp); font-weight: 600; font-size: 13px; color: var(--text); }
+.rc-proj { font-size: 11px; }
+.branch-tag { color: var(--cyan); font-size: 10px; }
+.rc-stat { margin-left: 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.rc-head .ago { margin-left: auto; }
+.rc-head .row-actions { opacity: 1; } /* review actions always visible */
+.ds b { color: var(--text); }
+.add { color: var(--green); }
+.del { color: var(--red); }
+.ahead { color: var(--amber); }
+.clean { color: var(--text-faint); }
+.rc-summary {
+  padding: 10px 14px; color: var(--text-dim); font-size: 12px; line-height: 1.6;
+  border-bottom: 1px solid rgba(28,40,51,0.5);
+}
+.rc-summary b { color: var(--text); }
+.rc-summary code { background: rgba(83,211,224,0.08); padding: 0 4px; border-radius: 2px; }
+.filelist { padding: 8px 14px; border-bottom: 1px solid rgba(28,40,51,0.5); }
+.fl-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; padding: 1px 0; color: var(--text-dim); }
+.fl-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-new { color: var(--green); font-size: 9px; border: 1px solid rgba(74,222,128,0.4); border-radius: 2px; padding: 0 3px; }
+.commits { padding: 8px 14px; border-bottom: 1px solid rgba(28,40,51,0.5); }
+.cm-row { display: flex; gap: 10px; font-size: 11px; color: var(--text-faint); padding: 1px 0; align-items: baseline; }
+.cm-row.by-claude .cm-hash { color: var(--amber); }
+.cm-hash { font-family: var(--mono); }
+.cm-subj { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.cm-when { white-space: nowrap; }
+.rc-diffbar { padding: 8px 14px; }
+.diff-slot { }
+.diff-loading { padding: 8px 14px; font-size: 11px; }
+pre.diff {
+  margin: 0; padding: 8px 0; background: #080c11; border-top: 1px solid var(--line);
+  overflow-x: auto; font-size: 11.5px; line-height: 1.45; max-height: 520px; overflow-y: auto;
+}
+pre.diff > div { padding: 0 12px; white-space: pre; }
+.d-file { color: var(--text-dim); background: rgba(255,255,255,0.02); }
+.d-hunk { color: var(--cyan); }
+.d-add { color: var(--green); background: rgba(74,222,128,0.07); }
+.d-del { color: var(--red); background: rgba(240,101,94,0.07); }
+.d-ctx { color: var(--text-dim); }
+
 /* load-in */
 .main > * { animation: rise 0.3s ease-out backwards; }
 .main > *:nth-child(2) { animation-delay: 0.05s; }

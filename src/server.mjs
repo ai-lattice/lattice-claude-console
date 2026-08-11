@@ -12,6 +12,7 @@ import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   CLAUDE_DIR, fleet, inbox, jobs, jobTimeline, usageRollup, getSessionDetail, searchTranscripts, liveSessionFor,
+  reviewFleet, getDiff,
 } from './data.mjs';
 import { transcriptPath } from './data.mjs';
 import { sessionSummary } from './transcript.mjs';
@@ -199,6 +200,12 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (p === '/api/fleet') return json(res, 200, fleet({ recentDays: Number(url.searchParams.get('days')) || 14 }));
+    if (p === '/api/review') return json(res, 200, reviewFleet({ recentDays: Number(url.searchParams.get('days')) || 3 }));
+    if (p === '/api/diff') {
+      const detail = getDiff(url.searchParams.get('projectKey') || '', url.searchParams.get('sessionId') || '');
+      if (!detail) return json(res, 404, { error: 'not found' });
+      return json(res, 200, detail);
+    }
     if (p === '/api/inbox') return json(res, 200, inbox());
     if (p === '/api/jobs') return json(res, 200, jobs());
     if (p.startsWith('/api/job/')) {

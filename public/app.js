@@ -104,6 +104,7 @@ function runAct(act, d) {
     if (currentRender) currentRender();
   }
   else if (act === 'dismiss' && d.rkey) dismissReport(d.rkey);
+  else if (act === 'diff' && d.dkey) toggleDiff(d.dkey);
 }
 
 const chip = (status) => `<span class="chip ${esc(status)}">${esc(status)}</span>`;
@@ -138,6 +139,125 @@ function dismissReport(key) {
   if (currentRender) currentRender();
 }
 const finished = (items) => items.filter((i) => i.type === 'report' && !dismissed.has(reportKey(i)));
+
+// ---------- REVIEW: the work-product surface (the point of this tool) ----------
+// One card per project: what the agent CHANGED (git diff/stat/commits) paired
+// with what it SAYS it did (its summary). Review the work without cd-ing into
+// every repo — the job claude agents / iTerm / tmux don't do.
+const diffCache = new Map(); // key -> {open, html}
+
+async function viewReview() {
+  const cards = await api('/api/review?days=3');
+  setBadge(cards.filter((c) => c.status === 'waiting' || c.status === 'stalled').length);
+  $('#foot-stats').textContent = `${cards.length} to review`;
+
+  let html = `<h1 class="view-title"><span class="accent">01</span> REVIEW — WHAT YOUR AGENTS BUILT</h1>`;
+  if (!cards.length) {
+    html += `<div class="panel"><div class="empty">No active or recent work to review. Launch agents, then check back.</div></div>`;
+    main.innerHTML = html;
+    return;
+  }
+  html += cards.map(reviewCardHtml).join('');
+  main.innerHTML = html;
+  initNav();
+  // restore any expanded diffs
+  for (const [key, st] of diffCache) if (st.open) renderDiffInto(key);
+}
+
+function diffKey(c) { return `${c.projectKey}/${c.sessionId}`; }
+
+function reviewCardHtml(c) {
+  const open = `#/session/${esc(c.projectKey)}/${esc(c.sessionId)}`;
+  const r = c.repo || {};
+  const stat = r.isRepo
+    ? (r.dirty
+        ? `<span class="ds"><b>${r.diffstat.files}</b> file${r.diffstat.files !== 1 ? 's' : ''}</span> <span class="add">+${r.diffstat.insertions}</span> <span class="del">−${r.diffstat.deletions}</span>${r.aheadCount ? ` · <span class="ahead">${r.aheadCount} unpushed</span>` : ''}`
+        : (r.aheadCount ? `<span class="ahead">${r.aheadCount} unpushed commit${r.aheadCount !== 1 ? 's' : ''}</span>` : '<span class="clean">working tree clean</span>'))
+    : '<span class="muted">not a git repo</span>';
+
+  const files = r.isRepo && r.files?.length
+    ? `<div class="filelist">${r.files.map((f) => `<div class="fl-row">
+        <span class="fl-path">${esc(f.path)}${f.untracked ? ' <span class="fl-new">new</span>' : ''}</span>
+        ${f.added != null ? `<span class="add">+${f.added}</span> <span class="del">−${f.removed}</span>` : '<span class="muted">bin</span>'}
+      </div>`).join('')}${r.filesTruncated ? `<div class="fl-row muted">+${r.filesTruncated} more…</div>` : ''}</div>`
+    : '';
+
+  const commits = r.isRepo && r.commits?.length
+    ? `<div class="commits">${r.commits.slice(0, 4).map((cm) => `<div class="cm-row ${cm.byClaude ? 'by-claude' : ''}">
+        <span class="cm-hash">${esc(cm.hash)}</span>
+        <span class="cm-subj">${esc(cm.subject)}</span>
+        <span class="cm-when">${esc(cm.when)}</span>
+      </div>`).join('')}</div>`
+    : '';
+
+  const canDiff = r.isRepo && (r.dirty);
+  const acts = rowActions({ open, live: c.live, short: c.short, cwd: c.cwd });
+
+  return `<div class="panel review-card nav-row" tabindex="-1"
+      data-open="${open}" data-live="${c.live ? '1' : ''}" data-short="${esc(c.short || '')}" data-cwd="${esc(c.cwd || '')}"
+      data-dkey="${esc(diffKey(c))}">
+    <div class="rc-head">
+      ${chip(c.status)}
+      <span class="rc-title">${esc(c.title || shortId(c.sessionId))}</span>
+      <span class="muted rc-proj">${esc(c.name)}</span>
+      ${r.branch ? `<span class="kv branch-tag">⎇ ${esc(r.branch)}</span>` : ''}
+      <span class="rc-stat">${stat}</span>
+      <span class="ago">${ago(c.lastTs)}</span>
+      ${acts}
+    </div>
+    ${c.summary ? `<div class="rc-summary">${md((c.summary || '').slice(0, 800))}</div>` : ''}
+    ${files}
+    ${commits}
+    ${canDiff ? `<div class="rc-diffbar"><button class="btn mini" data-act="diff" data-dkey="${esc(diffKey(c))}">${
+      diffCache.get(diffKey(c))?.open ? '▾ HIDE DIFF' : '▸ SHOW DIFF'
+    }</button></div><div class="diff-slot" id="diff-${esc(diffKey(c).replace(/[^\w]/g, '_'))}"></div>` : ''}
+  </div>`;
+}
+
+async function toggleDiff(key) {
+  const st = diffCache.get(key) || { open: false, html: null };
+  st.open = !st.open;
+  diffCache.set(key, st);
+  // Update the button label in place, then fill/clear the slot — no full re-render.
+  const btn = document.querySelector(`[data-act="diff"][data-dkey="${cssEsc(key)}"]`);
+  if (btn) btn.textContent = st.open ? '▾ HIDE DIFF' : '▸ SHOW DIFF';
+  if (st.open) await renderDiffInto(key);
+  else { const slot = document.getElementById('diff-' + key.replace(/[^\w]/g, '_')); if (slot) slot.innerHTML = ''; }
+}
+// escape a value for use inside a CSS attribute selector
+function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
+
+async function renderDiffInto(key) {
+  const slot = document.getElementById('diff-' + key.replace(/[^\w]/g, '_'));
+  if (!slot) return;
+  const st = diffCache.get(key);
+  if (!st?.open) { slot.innerHTML = ''; return; }
+  if (st.html) { slot.innerHTML = st.html; return; }
+  slot.innerHTML = '<div class="diff-loading muted">loading diff…</div>';
+  const [projectKey, sessionId] = key.split('/');
+  try {
+    const d = await api(`/api/diff?projectKey=${encodeURIComponent(projectKey)}&sessionId=${encodeURIComponent(sessionId)}`);
+    st.html = renderUnifiedDiff(d.diff || '', d.truncated);
+    slot.innerHTML = st.html;
+  } catch {
+    slot.innerHTML = '<div class="diff-loading muted">could not load diff</div>';
+  }
+}
+
+// Color a unified diff. Escaped first; then per-line class by leading char.
+function renderUnifiedDiff(diff, truncated) {
+  if (!diff.trim()) return '<div class="diff-loading muted">no textual changes</div>';
+  const lines = diff.split('\n').map((ln) => {
+    const c = ln[0];
+    let cls = 'd-ctx';
+    if (ln.startsWith('diff --git') || ln.startsWith('index ') || ln.startsWith('--- ') || ln.startsWith('+++ ')) cls = 'd-file';
+    else if (ln.startsWith('@@')) cls = 'd-hunk';
+    else if (c === '+') cls = 'd-add';
+    else if (c === '-') cls = 'd-del';
+    return `<div class="${cls}">${esc(ln) || '&nbsp;'}</div>`;
+  });
+  return `<pre class="diff">${lines.join('')}</pre>${truncated ? '<div class="muted" style="padding:4px 10px">diff truncated — open the session or terminal for the full change</div>' : ''}`;
+}
 
 // ---------- views ----------
 async function viewFleet() {
@@ -557,9 +677,11 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   // View shortcuts (single keys) — g-prefix-free for speed.
-  const routes = { '1': '#/', '2': '#/inbox', '3': '#/jobs', '4': '#/search', '5': '#/usage' };
+  const routes = { '1': '#/', '2': '#/fleet', '3': '#/inbox', '4': '#/jobs', '5': '#/search', '6': '#/usage' };
   if (routes[e.key]) { location.hash = routes[e.key]; return; }
   if (e.key === '/') { e.preventDefault(); location.hash = '#/search'; return; }
+  // 'd' toggles the diff on the selected review card.
+  if (e.key === 'd') { const r = selectedRow(); if (r?.dataset.dkey) { toggleDiff(r.dataset.dkey); return; } }
 
   if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); moveNav(1); return; }
   if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); moveNav(-1); return; }
@@ -638,12 +760,14 @@ function footStats(data) {
 }
 
 const routes = [
-  { re: /^#?\/?$/, view: viewFleet, nav: 'fleet' },
+  { re: /^#?\/?$/, view: viewReview, nav: 'review' },
+  { re: /^#\/review/, view: viewReview, nav: 'review' },
+  { re: /^#\/fleet/, view: viewFleet, nav: 'fleet' },
   { re: /^#\/inbox$/, view: viewInbox, nav: 'inbox' },
   { re: /^#\/jobs$/, view: viewJobs, nav: 'jobs' },
   { re: /^#\/search/, view: viewSearch, nav: 'search' },
   { re: /^#\/(usage|costs)/, view: viewUsage, nav: 'usage' }, // /costs kept as alias
-  { re: /^#\/session\/([^/]+)\/([^/?]+)/, view: viewSession, nav: 'fleet' },
+  { re: /^#\/session\/([^/]+)\/([^/?]+)/, view: viewSession, nav: 'review' },
 ];
 
 let currentRender = null;
